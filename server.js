@@ -2,10 +2,11 @@ const express = require('express')
 var bodyParser = require('body-parser')
 var cors = require('cors')
 const knex = require('knex')
+const bcrypt = require('bcrypt-nodejs')
 
 const app = express()
 
-const postgres = require('knex')({
+const db = require('knex')({
   client: 'pg',
   connection: {
     host : '127.0.0.1',
@@ -15,42 +16,32 @@ const postgres = require('knex')({
   }
 });
 
-postgres.select('*').from('users').then(data => {
+db.select('*').from('users').then(data => {
   console.log(data);
 }) 
 
-const database = {
-  users : [
-  {
-    id: '123',
-    name: 'John',
-    email: 'john@gmail.com',
-    password: 'cookies',
-    entries: 0,
-    joined : new Date()
-  },
-  {
-    id: '124',
-    name: 'Sally',
-    email: 'sally@gmail.com',
-    password: 'bananas',
-    entries: 0,
-    joined : new Date()
-  }
-  ]
-}
 
 app.use(cors());
 app.use(bodyParser.json());
 app.get('/',(req,res) => res.send(database.users))
 
-app.post('/signin',(req,res) =>{
-  if(req.body.email === database.users[0].email && req.body.password === database.users[0].password){
-    res.json('signed in');
-  }
-  else{
-    res.status(400).json('access denied');
-  }
+app.post('/signin',(req,res) => {
+  db.select('email','hash').from('login')
+  .where('email','=',req.body.email)
+  .then(data => {
+    const isValid = bcrypt.compareSync(req.body.password, data[0].hash);
+    if(isValid){
+      return db.select('*').from('users')
+       .where('email','=',req.body.email)
+       .then(user => {
+        res.json(user[0])
+       })
+       .catch(err => res.status(400).json('unable to get user'))
+    } else {
+      res.status(400).json('wrong credentials')
+    }
+  })
+  .catch(err => res.status(400).json('wrong credentials'))
 })
 
 app.post('/findface',(req,res) => {
@@ -66,39 +57,56 @@ app.post('/findface',(req,res) => {
 
 app.post('/register',(req,res) => {
   const { email,name,password } = req.body;
-  db('users').insert({
-    email: email,
-    name : name,
-    joined : new Date()
-  }).then(console.log)
-  res.json(database.users[database.users.length - 1])
+  const hash = bcrypt.hashSync(password);
+  db.transaction(trx => {
+    trx.insert({
+      hash : hash,
+      email : email
+    })
+    .into('login')
+    .returning('email')
+    .then(loginEmail => {
+      return trx('users')
+      .returning('*')
+      .insert({
+        email: loginEmail[0],
+        name: name,
+        joined: new Date()
+      })
+      .then(user => {
+        res.json(user[0]);
+      })
+    })
+    .then(trx.commit)
+    .catch(trx.rollback)
+  })
+  .catch(err => res.status(400).json('unable to register'))
 })
 
-app.get('/profile/:userId',(req,res) => {
+app.get('/profile/:id',(req,res) => {
   const { id } = req.params;
-  let found = false;
-    database.users.forEach(user => {
-      if(user.id === id){
-        found = true; 
-        return res.json(user);
-      }
-    })
-    if(!found){
-      res.status(400).json('not found');
+  db.select('*').from('users').where({ id })
+   .then(user => {
+    if(user.length){
+      res.json(user[0])
+    } else{
+      res.status(400).json('Not Found')
     }
+   })
+   .catch(err => res.status(400).json('error getting user'))
 })
-app.post('/image',(req,res) => {
-  const { id } = req.params;
-    database.users.forEach(user => {
-      if(user.id === id){
-        found = true;
-        user.entries++  
-        return res.json(user);
-      }
-      if(!found){
-      res.status(400).json('not found');
-    }
+
+
+app.put('/image',(req,res) => {
+  const { id } = req.body;
+    db('users').where('id','=', id)
+    .increment('entries',1)
+    .returning('entries')
+    .then(entries => {
+      res.json(entries[0]);
     })
+    .catch(err => res.status(400).json('unable to get entries'))
+      
 })
 
 app.listen(3000,() => console.log('Example app listening on port 3000!'))
